@@ -1,113 +1,138 @@
+// index.js – Tier 4 PG Detector (Dynamic, All-in-One)
 import express from 'express';
 import { chromium } from 'playwright';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
+import { getDisposableEmail } from './helpers/emailHelper.js';
+import { dismissPopups, autoScroll } from './helpers/popupHelper.js';
+import { performFlow } from './helpers/flowUtils.js';
+import { findProductPage } from './helpers/sitemapFinder.js';
+
+// Load environment variables
+dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json());
 
-// Oxylabs Proxy Credentials (as provided)
-const OXY_SERVER = 'http://dc.oxylabs.io:8000';
-const OXY_USER = 'user-test123_e8zrY-country-IN';
-const OXY_PASS = 'Anuragrastogi123_';
+// Load config for a domain if available
+function loadFlowConfig(domain) {
+  const configPath = path.join(__dirname, 'flows', `${domain}.json`);
+  if (fs.existsSync(configPath)) {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  }
+  const defaultPath = path.join(__dirname, 'flows', `default.json`);
+  return fs.existsSync(defaultPath)
+    ? JSON.parse(fs.readFileSync(defaultPath, 'utf8'))
+    : {};
+}
 
-// Known PG identifiers to detect
+// Extract domain from URL
+function extractDomain(url) {
+  try {
+    const { hostname } = new URL(url);
+    return hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+}
+
+// PG keywords
 const PG_KEYWORDS = [
   'razorpay', 'stripe', 'payu', 'ccavenue', 'cashfree',
   'billdesk', 'paykun', 'mobikwik', 'juspay', 'phonepe',
-  'easebuzz', 'instamojo', 'payglocal', 'airpay'
+  'easebuzz', 'instamojo', 'payglocal', 'airpay', 'setu'
 ];
 
-// Utility: pause
-const sleep = ms => new Promise(res => setTimeout(res, ms));
-
-// Utility: dismiss cookie banners or popups
-async function dismissPopups(page) {
-  const selectors = [
-    'button:has-text("accept")',
-    'button:has-text("agree")',
-    '[aria-label="close"]',
-    '.close', '.Close', '#onetrust-accept-btn-handler'
-  ];
-  for (const sel of selectors) {
-    try {
-      await page.click(sel, { timeout: 1200 });
-    } catch (_) {}
-  }
-  try { await page.keyboard.press('Escape'); } catch (_) {}
-}
-
-app.get('/', (_, res) => res.send('✅ PG detector (Tier 3 only) is live.'));
-
+// Main detection endpoint
 app.post('/detect', async (req, res) => {
   const { url } = req.body || {};
-  if (!url?.startsWith('http')) {
-    return res.status(400).json({ error: 'Missing or invalid URL in request body.' });
+  if (!url || !url.startsWith('http')) {
+    return res.status(400).json({ error: 'Invalid URL' });
   }
 
-  const evidence = [];
+  const domain = extractDomain(url);
+  const config = loadFlowConfig(domain);
   let browser;
+  const evidence = [];
+  const flowStatus = {};
 
   try {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-blink-features=AutomationControlled'
-      ]
+      args: ['--no-sandbox'],
     });
 
     const context = await browser.newContext({
       proxy: {
-        server: OXY_SERVER,
-        username: OXY_USER,
-        password: OXY_PASS
+        server: process.env.OXY_SERVER,
+        username: process.env.OXY_USER,
+        password: process.env.OXY_PASS,
       },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      userAgent: process.env.USER_AGENT ||
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
       viewport: { width: 1366, height: 768 },
       deviceScaleFactor: 1.2,
       hasTouch: true
     });
 
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
-
     const page = await context.newPage();
 
     page.on('request', request => {
-      const reqUrl = request.url().toLowerCase();
-      if (PG_KEYWORDS.some(pg => reqUrl.includes(pg))) {
-        evidence.push(reqUrl);
+      const rUrl = request.url().toLowerCase();
+      if (PG_KEYWORDS.some(k => rUrl.includes(k))) {
+        evidence.push(rUrl);
       }
     });
 
-    // Try loading the page twice (with retry)
-    const navigate = () => page.goto(url, { waitUntil: 'networkidle', timeout: 40000 });
-    try {
-      await navigate();
-    } catch {
-      await sleep(1500);
-      await navigate();
-    }
+    const productUrl = config.product?.page || await findProductPage(url);
+    if (!productUrl) throw new Error('No product URL found');
 
+    await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await dismissPopups(page);
-    await sleep(5000); // Wait for scripts to settle
+    await autoScroll(page);
 
+    const email = await getDisposableEmail();
+    const address = {
+      name: process.env.DEFAULT_NAME || 'Alex Mart',
+      phone: process.env.DEFAULT_PHONE || '+91-9900990091',
+      zip: process.env.DEFAULT_ZIP || '560037',
+      street: process.env.DEFAULT_STREET || '24, alibahadur lake',
+      city: process.env.DEFAULT_CITY || 'Bangalore',
+      state: process.env.DEFAULT_STATE || 'Karnataka'
+    };
+
+    const result = await performFlow(page, config, email, address);
+    Object.assign(flowStatus, result.flowStatus);
+
+    await page.waitForTimeout(5000);
     await browser.close();
 
-    const deduped = [...new Set(evidence)];
     return res.json({
-      detected: deduped.length > 0,
-      gateway_urls: deduped,
-      confidence: deduped.length ? 0.95 : 0.0
+      detected: evidence.length > 0,
+      gateway_urls: [...new Set(evidence)],
+      confidence: evidence.length ? 0.95 : 0,
+      flow_status: flowStatus
     });
-
   } catch (err) {
     if (browser) await browser.close();
-    return res.status(504).json({
-      error: 'Timeout or navigation failure: ' + err.message
+    return res.status(500).json({
+      error: err.message,
+      detected: false,
+      gateway_urls: [],
+      confidence: 0,
+      flow_status: flowStatus
     });
   }
 });
 
-app.listen(3000, () => console.log('🚀 Tier 3 PG detector running on port 3000'));
+app.get('/', (_, res) => {
+  res.send('✅ PG Detector API is live');
+});
+
+app.listen(3000, () => {
+  console.log('🚀 Server running on port 3000');
+});
