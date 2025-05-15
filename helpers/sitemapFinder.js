@@ -1,65 +1,77 @@
-// helpers/sitemapFinder.js – now with robots.txt + homepage fallback
+// helpers/sitemapFinder.js – universal product‑page finder (v2)
 import fetch from 'node-fetch';
 import { parseStringPromise } from 'xml2js';
 import { URL } from 'url';
 
-const PRODUCT_HINTS = ['product', 'item', 'shop', 'detail', 'goods', 'collections', 'p/'];
+// Broad keyword seeds (do NOT try to list every niche word)
+const PRODUCT_HINTS = [
+  'product', 'item', 'shop', 'detail', 'goods', 'collections', 'p/',
+  'buy', 'store', 'cart', 'add', 'sku', 'id=', 'pid='
+];
 
 export async function findProductPage(base) {
   const baseUrl = base.endsWith('/') ? base.slice(0, -1) : base;
-  // 1. attempt hard‑coded sitemap paths
-  const hardPaths = [
+
+  // 1️⃣  Try standard sitemap paths quickly
+  const staticSm = [
     '/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml',
     '/sitemap-products.xml', '/sitemap_product.xml', '/sitemap_products_1.xml'
   ];
-  for (const p of hardPaths) {
-    const prod = await trySitemap(`${baseUrl}${p}`);
-    if (prod) return prod;
+  for (const p of staticSm) {
+    const hit = await scanSitemap(`${baseUrl}${p}`);
+    if (hit) return hit;
   }
-  // 2. look inside robots.txt for Sitemap: lines
-  const robots = await getRobotsSitemaps(`${baseUrl}/robots.txt`);
-  for (const sm of robots) {
-    const prod = await trySitemap(sm);
-    if (prod) return prod;
+
+  // 2️⃣  Parse robots.txt for custom sitemaps
+  for (const sm of await getRobotSitemaps(`${baseUrl}/robots.txt`)) {
+    const hit = await scanSitemap(sm);
+    if (hit) return hit;
   }
-  // 3. homepage fallback: scrape links that look like products
+
+  // 3️⃣  Fetch home page / first‑level categories and score links heuristically
   return await scrapeHomeForProduct(baseUrl);
 }
 
-// Fetch a sitemap URL and return first product‑looking link
-async function trySitemap(url) {
+// ───────────────────────────────────────────────────────── helpers ────
+async function scanSitemap(sitemapUrl) {
   try {
-    const res = await fetch(url, { timeout: 15000 });
+    const res = await fetch(sitemapUrl, { timeout: 15000 });
     if (!res.ok) return null;
-    const text = await res.text();
-    const xml = await parseStringPromise(text);
-    const urls = extractUrlsFromSitemap(xml);
-    return urls.find(link => PRODUCT_HINTS.some(h => link.toLowerCase().includes(h)));
+    const xmlText = await res.text();
+    const xml = await parseStringPromise(xmlText);
+    const urls = extractUrls(xml);
+
+    // simple heuristic: path contains hint OR looks like /xxx/yyy-zzz (has hyphen + ≥2 segments)
+    return urls.find(u => isProductish(u));
   } catch {
     return null;
   }
 }
 
-// Parse robots.txt for Sitemap: lines
-async function getRobotsSitemaps(robotsUrl) {
-  try {
-    const out = [];
-    const res = await fetch(robotsUrl, { timeout: 10000 });
-    if (!res.ok) return out;
-    const body = await res.text();
-    body.split(/\r?\n/).forEach(line => {
-      if (line.toLowerCase().startsWith('sitemap:')) {
-        const sm = line.split(':')[1].trim();
-        if (sm.startsWith('http')) out.push(sm);
-      }
-    });
-    return out;
-  } catch {
-    return [];
-  }
+function isProductish(url) {
+  const lower = url.toLowerCase();
+  if (PRODUCT_HINTS.some(h => lower.includes(h))) return true;
+  const path = new URL(url).pathname;
+  const segments = path.split('/').filter(Boolean);
+  if (segments.length >= 2 && /-/.test(path)) return true; // /category/product-name
+  if (/\d{5,}/.test(path)) return true;                    // long numeric id in url
+  if (path.endsWith('.html') || path.endsWith('.php')) return true;
+  return false;
 }
 
-// Very light homepage scrape for product links
+async function getRobotSitemaps(robotsUrl) {
+  try {
+    const res = await fetch(robotsUrl, { timeout: 10000 });
+    if (!res.ok) return [];
+    return res.text().then(body => body
+      .split(/\r?\n/)
+      .filter(line => line.toLowerCase().startsWith('sitemap:'))
+      .map(l => l.split(':')[1].trim())
+      .filter(u => u.startsWith('http'))
+    );
+  } catch { return []; }
+}
+
 async function scrapeHomeForProduct(baseUrl) {
   try {
     const res = await fetch(baseUrl, { timeout: 15000 });
@@ -67,31 +79,22 @@ async function scrapeHomeForProduct(baseUrl) {
     const html = await res.text();
     const hrefs = [...html.matchAll(/href=["']([^"']+)["']/gi)].map(m => m[1]);
     for (const href of hrefs) {
-      if (PRODUCT_HINTS.some(h => href.includes(h))) {
-        try {
-          const abs = new URL(href, baseUrl).href;
-          return abs;
-        } catch { /* ignore */ }
-      }
+      try {
+        const abs = new URL(href, baseUrl).href;
+        if (isProductish(abs)) return abs;
+      } catch { /* ignore invalid */ }
     }
     return null;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-function extractUrlsFromSitemap(xml) {
-  const urls = [];
+function extractUrls(xml) {
+  const out = [];
   if (xml.urlset?.url) {
-    for (const entry of xml.urlset.url) {
-      const loc = entry.loc?.[0];
-      if (typeof loc === 'string') urls.push(loc);
-    }
-  } else if (xml.sitemapindex?.sitemap) {
-    for (const entry of xml.sitemapindex.sitemap) {
-      const loc = entry.loc?.[0];
-      if (typeof loc === 'string') urls.push(loc);
-    }
+    xml.urlset.url.forEach(u => typeof u.loc?.[0] === 'string' && out.push(u.loc[0]));
   }
-  return urls;
+  if (xml.sitemapindex?.sitemap) {
+    xml.sitemapindex.sitemap.forEach(s => typeof s.loc?.[0] === 'string' && out.push(s.loc[0]));
+  }
+  return out;
 }
