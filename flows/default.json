@@ -1,0 +1,14 @@
+{
+  "product": {
+    "addBtnSel": "button[type='submit'], button.add-to-cart, .btn-cart, .shopify-payment-button",
+    "variantSel": "select[name*=variant], select[name*=size]",
+    "variantValue": "1"
+  },
+  "address": {
+    "zipField": "input[name*=zip], input[name*=postal]",
+    "continueBtn": "button[type='submit'], button[name*='continue'], button.continue"
+  },
+  "checkout": {
+    "btnSel": "a[href*='checkout'], button[name*='checkout'], .checkout-btn"
+  }
+}
