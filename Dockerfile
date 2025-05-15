@@ -1,10 +1,10 @@
-{
-  "name": "pg-detector",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": { "start": "node index.js" },
-  "dependencies": {
-    "express": "^4.18.2",
-    "playwright": "^1.42.0"
-  }
-}
+FROM mcr.microsoft.com/playwright:v1.42.0-jammy
+
+WORKDIR /app
+COPY package.json ./
+RUN npm install
+COPY index.js ./
+
+EXPOSE 3000
+CMD ["node", "index.js"]
+
