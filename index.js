@@ -16,18 +16,21 @@ app.post('/detect', async (req, res) => {
   const pgKeywords = [
     'razorpay', 'stripe', 'payu', 'ccavenue', 'cashfree',
     'billdesk', 'paykun', 'mobikwik', 'juspay', 'phonepe',
-    'easebuzz', 'instamojo'
+    'easebuzz', 'instamojo', 'payglocal', 'airpay'
   ];
 
   const OXY_PROXY = {
     server: 'http://dc.oxylabs.io:8000',
-    username: 'user-test123_e8zrY-country-IN',
+    username: 'user-test123_e8zrY-country-US',
     password: 'Anuragrastogi123_'
   };
 
   let browser;
   try {
-    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox']
+    });
 
     const context = await browser.newContext({
       proxy: {
@@ -35,12 +38,15 @@ app.post('/detect', async (req, res) => {
         username: OXY_PROXY.username,
         password: OXY_PROXY.password
       },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      viewport: { width: 1280, height: 800 },
+      hasTouch: true,
+      deviceScaleFactor: 1.25
     });
 
     const page = await context.newPage();
 
-    // Track PG requests
+    // Track PG-related network requests
     page.on('request', (request) => {
       const reqUrl = request.url().toLowerCase();
       if (pgKeywords.some(pg => reqUrl.includes(pg))) {
@@ -48,20 +54,27 @@ app.post('/detect', async (req, res) => {
       }
     });
 
-    // Navigate with retry logic
+    // Try navigation with fallback retry
     try {
-      await page.goto(url, { waitUntil: 'load', timeout: 15000 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     } catch (err1) {
       await page.waitForTimeout(1000);
       try {
-        await page.goto(url, { waitUntil: 'load', timeout: 10000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
       } catch (err2) {
         await browser.close();
         return res.status(504).json({ error: 'Timeout: Failed to load the page after retry' });
       }
     }
 
-    await page.waitForTimeout(3000); // Let scripts settle
+    // Try dismissing popups like cookie banners
+    try {
+      await page.click('button:has-text("Accept")', { timeout: 2000 });
+    } catch (e) {
+      // No popup found — continue
+    }
+
+    await page.waitForTimeout(5000); // Let everything load
 
     await browser.close();
 
