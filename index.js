@@ -19,43 +19,49 @@ app.post('/detect', async (req, res) => {
     'easebuzz', 'instamojo'
   ];
 
-  let browser;
+  const OXY_PROXY = {
+    server: 'http://dc.oxylabs.io:8000',
+    username: 'user-test123_e8zrY-country-IN',
+    password: 'Anuragrastogi123_'
+  };
 
+  let browser;
   try {
     browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 
-    // ✅ Optional: force IPv4 DNS routing
     const context = await browser.newContext({
       proxy: {
-        server: 'http://ipv4only.arpa'
-      }
+        server: OXY_PROXY.server,
+        username: OXY_PROXY.username,
+        password: OXY_PROXY.password
+      },
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
     });
 
     const page = await context.newPage();
 
+    // Track PG requests
     page.on('request', (request) => {
       const reqUrl = request.url().toLowerCase();
-      if (pgKeywords.some(keyword => reqUrl.includes(keyword))) {
+      if (pgKeywords.some(pg => reqUrl.includes(pg))) {
         pgHits.push(reqUrl);
       }
     });
 
-    // ✅ Try first attempt
+    // Navigate with retry logic
     try {
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 15000
-      });
-    } catch (err) {
-      // ✅ Retry once after 1s if DNS fails
+      await page.goto(url, { waitUntil: 'load', timeout: 15000 });
+    } catch (err1) {
       await page.waitForTimeout(1000);
-      await page.goto(url, {
-        waitUntil: 'domcontentloaded',
-        timeout: 10000
-      });
+      try {
+        await page.goto(url, { waitUntil: 'load', timeout: 10000 });
+      } catch (err2) {
+        await browser.close();
+        return res.status(504).json({ error: 'Timeout: Failed to load the page after retry' });
+      }
     }
 
-    await page.waitForTimeout(3000); // Let scripts load
+    await page.waitForTimeout(3000); // Let scripts settle
 
     await browser.close();
 
