@@ -43,23 +43,70 @@ export async function performFlow(page, cfg, email, address) {
 
 async function addToCart(page, prodCfg) {
   try {
-    // Variant selection if selector exists
-    if (prodCfg.variantSel) {
-      try {
-        const sel = prodCfg.variantSel;
-        await page.waitForSelector(sel, { timeout: 5000 });
-        const firstOption = await page.$eval(sel, s => s.options[1]?.value || s.options[0].value);
-        await page.selectOption(sel, prodCfg.variantValue || firstOption);
-      } catch {/* variant optional */}
+    /* ── Variant detection ── */
+    const selectSel = prodCfg.variantSel || 'select[name*=variant i], select[name*=size i]';
+    const swatchSel = '[role="option"], li[data-variant-id], div[data-variant-id], button[data-variant-id]';
+
+    if (await page.$(selectSel)) {
+      const firstVal = await page.$eval(selectSel, s => s.options[1]?.value || s.options[0].value);
+      await page.selectOption(selectSel, prodCfg.variantValue || firstVal);
+    } else if (await page.$(swatchSel)) {
+      await page.click(`${swatchSel} >> nth=0`);
     }
 
-    // Primary add‑to‑cart button
-    const btnSel = prodCfg.addBtnSel || 'button:has-text("add to cart" i), button[name*="add" i]';
-    await page.click(btnSel, { timeout: 10000 });
-    await page.waitForTimeout(2000);
+    /* ── Build a robust button selector list ── */
+    const defaultBtns = [
+      /* ── text variants ── */
+      'button:has-text("add to cart" i)',
+      'button:has-text("add to bag" i)',
+      'button:has-text("add item" i)',
+      'button:has-text("add basket" i)',
+      'button:has-text("add to basket" i)',
+      'button:has-text("add product" i)',
+      'button:has-text("add to trolley" i)',
+      'button:has-text("add now" i)',
+      'button:has-text("buy now" i)',
+      'button:has-text("buy it now" i)',
+      'button:has-text("shop now" i)',
+      'button:has-text("order now" i)',
+      'button:has-text("bag it" i)',
+      'button:has-text("purchase" i)',
+      'button:has-text("checkout" i)',
+      'button:has-text("proceed" i)',
+      'button:has-text("subscribe" i)',
+      /* ── span or div inside button ── */
+      'button span:has-text("add" i)',
+      'button div:has-text("add" i)',
+      /* ── attribute/class patterns ── */
+      'button[class*="addtocart" i]',
+      'button[class*="add-to-cart" i]',
+      'button[class*="addcart" i]',
+      'button[class*="cart-btn" i]',
+      'button[class*="btn-cart" i]',
+      'button[class*="add-basket" i]',
+      '[data-addtocart], [data-add-to-cart], [data-action*="add" i]',
+      '[data-button*="add" i]',
+      '[aria-label*="add to cart" i]',
+      /* ── anchor tags (some themes use <a>) ── */
+      'a:has-text("add to cart" i)',
+      'a[class*="addtocart" i]',
+      'a[data-addtocart]',
+      /* ── generic regex clickable via text selector ── */
+      'text=/\b(add|buy|order|shop|bag|cart|purchase|get|checkout|proceed)\b.*(now|item|bag|cart|it)?/i'
+    ];
+
+    const btnSel = prodCfg.addBtnSel || defaultBtns.join(', ');
+    await page.click(btnSel, { timeout: 12000 });
+
+    // wait for confirmation: cart count, mini‑cart open, or add‑cart API
+    await Promise.race([
+      page.waitForSelector('.cart-count:not(:empty), .mini-cart, .drawer--cart, [data-cart-count] ', { timeout: 7000 }),
+      page.waitForResponse(r => /add.*cart|cart\/add|orders|checkout/i.test(r.url()), { timeout: 7000 })
+    ]);
+
     return 'success';
   } catch {
-    // Fallback: click first submit button
+    // Fallback: first visible submit button
     try {
       await page.click('button[type="submit"]', { timeout: 5000 });
       return 'fallback';
