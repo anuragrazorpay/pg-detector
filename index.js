@@ -6,7 +6,7 @@ app.use(express.json({ limit: '1mb' }));
 
 // Oxylabs Proxy Credentials (as provided)
 const OXY_SERVER = 'http://dc.oxylabs.io:8000';
-const OXY_USER = 'user-test123_e8zrY-country-US';
+const OXY_USER = 'user-test123_e8zrY-country-IN';
 const OXY_PASS = 'Anuragrastogi123_';
 
 // Known PG identifiers to detect
