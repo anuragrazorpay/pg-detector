@@ -54,6 +54,7 @@ app.post('/detect', async (req, res) => {
     });
 
     const page = await context.newPage();
+    await page.route('**/*.{png,jpg,jpeg,svg,gif,webp,woff,woff2}', r => r.abort());
     page.on('request', r=>{ const u=r.url().toLowerCase(); if(PG_KEYWORDS.some(k=>u.includes(k))) evidence.push(u); });
 
     // product URL priority: body → file → auto‑discover
